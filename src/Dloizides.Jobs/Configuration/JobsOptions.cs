@@ -30,4 +30,8 @@ public sealed class JobsOptions
 
     /// <summary>How many recent runs the status query includes in a job's timeline history. Default 20.</summary>
     public int HistoryLimit { get; set; } = 20;
+
+    /// <summary>Real-time status PUSH tunables — the <c>Jobs:Status</c> sub-section (backplane + wire
+    /// selection). Opt-in: defaults to poll-only, so leaving it unset changes nothing.</summary>
+    public JobStatusOptions Status { get; set; } = new();
 }

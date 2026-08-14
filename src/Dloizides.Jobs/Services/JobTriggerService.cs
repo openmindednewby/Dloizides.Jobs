@@ -1,6 +1,7 @@
 using Dloizides.Jobs.Abstractions;
 using Dloizides.Jobs.Model;
 using Dloizides.Jobs.Runtime;
+using Dloizides.Jobs.Status;
 using Microsoft.Extensions.Logging;
 
 namespace Dloizides.Jobs.Services;
@@ -15,15 +16,21 @@ public sealed class JobTriggerService : IJobTrigger
     private readonly IServiceProvider _provider;
     private readonly IJobStore _store;
     private readonly TimeProvider _time;
+    private readonly IJobStatusBackplane _backplane;
     private readonly ILogger<JobTriggerService> _logger;
 
     /// <summary>Construct the trigger service.</summary>
     public JobTriggerService(
-        IServiceProvider provider, IJobStore store, TimeProvider time, ILogger<JobTriggerService> logger)
+        IServiceProvider provider,
+        IJobStore store,
+        TimeProvider time,
+        IJobStatusBackplane backplane,
+        ILogger<JobTriggerService> logger)
     {
         _provider = provider;
         _store = store;
         _time = time;
+        _backplane = backplane;
         _logger = logger;
     }
 
@@ -64,6 +71,13 @@ public sealed class JobTriggerService : IJobTrigger
         _logger.LogInformation(
             "Job {JobName} triggered ({TriggerSource}) by {TriggeredBy} as run {RunId}.",
             jobName, triggerSource, triggeredBy, result.Run.Id);
+
+        // Persist-first-push-second: the queued row committed in EnqueueAsync; now notify so a stream shows
+        // the run appear immediately instead of on the next poll.
+        var evt = new JobStatusEvent(
+            jobName, JobStatusEventKinds.Queued, result.Run.Id, _time.GetUtcNow());
+        await JobStatusPublisher.PublishSafeAsync(_backplane, evt, _logger, cancellationToken).ConfigureAwait(false);
+
         return JobTriggerResult.Accepted(result.Run);
     }
 }

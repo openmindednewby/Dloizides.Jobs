@@ -1,4 +1,5 @@
 using Dloizides.Jobs.Abstractions;
+using Dloizides.Jobs.Backplane;
 using Dloizides.Jobs.Configuration;
 using Dloizides.Jobs.Hosting;
 using Dloizides.Jobs.Services;
@@ -6,6 +7,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace Dloizides.Jobs.Extensions;
@@ -56,6 +58,8 @@ public static class ServiceCollectionExtensions
         // The default alarm; a service can register its own IJobStalenessAlarm to page or post instead.
         services.TryAddSingleton<IJobStalenessAlarm, LoggingJobStalenessAlarm>();
 
+        AddStatusBackplane(services);
+
         services.TryAddScoped<IJobTrigger, JobTriggerService>();
         services.TryAddScoped<IJobStatusQuery, DefaultJobStatusQuery>();
 
@@ -70,5 +74,44 @@ public static class ServiceCollectionExtensions
         services.AddHostedService(sp => sp.GetRequiredService<JobStalenessMonitorHostedService>());
 
         return services;
+    }
+
+    /// <summary>
+    /// Register the always-present <c>None</c> backplane candidate and the config-driven resolver. The
+    /// resolved <see cref="IJobStatusBackplane"/> is a singleton that, at first use, reads
+    /// <c>Jobs:Status:Backplane</c> and picks the matching <see cref="JobStatusBackplaneRegistration"/>
+    /// (case-insensitive, last registration wins). An unrecognised value falls back to <c>None</c> with a
+    /// warning rather than failing startup — push is opt-in and never load-bearing.
+    /// </summary>
+    private static void AddStatusBackplane(IServiceCollection services)
+    {
+        // The floor: 'None' is always a candidate, so selection never has an empty set to choose from.
+        services.AddSingleton(new JobStatusBackplaneRegistration(
+            JobStatusBackplanes.None, _ => NullJobStatusBackplane.Instance));
+
+        services.TryAddSingleton<IJobStatusBackplane>(ResolveBackplane);
+    }
+
+    private static IJobStatusBackplane ResolveBackplane(IServiceProvider sp)
+    {
+        var configured = sp.GetRequiredService<IOptions<JobsOptions>>().Value.Status.Backplane;
+        var registrations = sp.GetServices<JobStatusBackplaneRegistration>().ToList();
+
+        // Last registration wins so a consumer can override a package-provided candidate for the same key.
+        var match = registrations.LastOrDefault(
+            r => string.Equals(r.Key, configured, StringComparison.OrdinalIgnoreCase));
+        if (match is not null)
+        {
+            return match.Factory(sp);
+        }
+
+        var logger = sp.GetService<ILoggerFactory>()?.CreateLogger(typeof(ServiceCollectionExtensions).FullName!);
+        logger?.LogWarning(
+            "No job status backplane is registered for Jobs:Status:Backplane='{Configured}'. Known keys: {Keys}. "
+            + "Falling back to '{Fallback}' (poll-only).",
+            configured,
+            string.Join(", ", registrations.Select(r => r.Key).Distinct(StringComparer.OrdinalIgnoreCase)),
+            JobStatusBackplanes.None);
+        return NullJobStatusBackplane.Instance;
     }
 }

@@ -14,14 +14,14 @@
     <RepositoryType>git</RepositoryType>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
-    <PackageTags>background-jobs;checkpoint;resume;lease;single-flight;watchdog;hosted-service;saas</PackageTags>
+    <PackageTags>background-jobs;checkpoint;resume;lease;single-flight;watchdog;hosted-service;realtime;backplane;saas</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
-    <Description>Checkpointed, resumable, conflict-safe, watchdog-alarmed, UI-visible background jobs — the storage-agnostic core. Single-flight claim, heartbeated lease, compare-and-set transitions (0-row = benign no-op), resume-from-checkpoint on reclaim.</Description>
+    <Description>Checkpointed, resumable, conflict-safe, watchdog-alarmed, UI-visible background jobs — the storage-agnostic core. Single-flight claim, heartbeated lease, compare-and-set transitions (0-row = benign no-op), resume-from-checkpoint on reclaim. Now with a pluggable real-time status backplane (persist-first-push-second) for opt-in cross-pod PUSH.</Description>
 
     <!-- Versioning -->
-    <Version>1.0.0</Version>
-    <AssemblyVersion>1.0.0.0</AssemblyVersion>
-    <FileVersion>1.0.0.0</FileVersion>
+    <Version>1.1.0</Version>
+    <AssemblyVersion>1.1.0.0</AssemblyVersion>
+    <FileVersion>1.1.0.0</FileVersion>
 
     <!-- NuGet settings -->
     <GeneratePackageOnBuild>false</GeneratePackageOnBuild>

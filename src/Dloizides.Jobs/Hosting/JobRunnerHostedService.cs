@@ -2,6 +2,7 @@ using Dloizides.Jobs.Abstractions;
 using Dloizides.Jobs.Configuration;
 using Dloizides.Jobs.Model;
 using Dloizides.Jobs.Runtime;
+using Dloizides.Jobs.Status;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -21,6 +22,7 @@ public sealed class JobRunnerHostedService : BackgroundService, IJobRunner
     private readonly IServiceScopeFactory _scopes;
     private readonly JobsOptions _options;
     private readonly TimeProvider _time;
+    private readonly IJobStatusBackplane _backplane;
     private readonly ILogger<JobRunnerHostedService> _logger;
     private readonly string _owner;
 
@@ -29,11 +31,13 @@ public sealed class JobRunnerHostedService : BackgroundService, IJobRunner
         IServiceScopeFactory scopes,
         IOptions<JobsOptions> options,
         TimeProvider time,
+        IJobStatusBackplane backplane,
         ILogger<JobRunnerHostedService> logger)
     {
         _scopes = scopes;
         _options = options.Value;
         _time = time;
+        _backplane = backplane;
         _logger = logger;
         _owner = JobOwnerId.New();
     }
@@ -108,13 +112,20 @@ public sealed class JobRunnerHostedService : BackgroundService, IJobRunner
             return;
         }
 
-        var context = new JobContext(_scopes, run.Id, _owner, run.Argument, run.Checkpoint, _time);
+        var context = new JobContext(
+            _scopes, run.JobName, run.Id, _owner, run.Argument, run.Checkpoint, _time, _backplane, _logger);
         var resumed = run.Checkpoint is not null;
         if (resumed)
         {
             _logger.LogInformation(
                 "Resuming job {JobName} run {RunId} from its last checkpoint.", run.JobName, run.Id);
         }
+
+        // Persist-first-push-second: the claim CAS already committed 'running' in ClaimNextAsync; now notify.
+        // A resumed run is a reclaim; a fresh one is a plain claim.
+        await PublishAsync(
+            run, resumed ? JobStatusEventKinds.Reclaimed : JobStatusEventKinds.Claimed, cancellationToken)
+            .ConfigureAwait(false);
 
         string outcome;
         string? error;
@@ -161,7 +172,17 @@ public sealed class JobRunnerHostedService : BackgroundService, IJobRunner
             _logger.LogInformation(
                 "Job {JobName} run {RunId} was reclaimed before this runner could record '{Outcome}'; "
                 + "dropping it cleanly.", run.JobName, run.Id, outcome);
+            return;
         }
+
+        // Persist-first-push-second: the terminal outcome committed; notify with the outcome as the kind.
+        await PublishAsync(run, outcome, cancellationToken).ConfigureAwait(false);
+    }
+
+    private Task PublishAsync(JobRun run, string kind, CancellationToken cancellationToken)
+    {
+        var evt = new JobStatusEvent(run.JobName, kind, run.Id, _time.GetUtcNow());
+        return JobStatusPublisher.PublishSafeAsync(_backplane, evt, _logger, cancellationToken);
     }
 
     /// <summary>

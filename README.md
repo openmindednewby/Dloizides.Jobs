@@ -74,10 +74,35 @@ var status = await statusQuery.GetAsync("ingest", ct);   // §8 UI shape: phase,
 | `IJobStore` | The persistence seam (every mutation is compare-and-set; 0 rows = benign no-op). Supplied by a storage package. |
 | `IJobRunner` | Hosted service: poll → single-flight claim → lease + auto-heartbeat → run → checkpoint → CAS complete → reclaim-and-resume. `RunOnceAsync` is the deterministic seam. |
 | `IJobStalenessMonitor` / `IJobStalenessAlarm` | The watchdog and where its alarm goes (default logs a warning). |
-| `IJobStatusQuery` | The §8 UI JSON for the running-jobs console. |
+| `IJobStatusQuery` | The §8 UI JSON for the running-jobs console (the poll path). |
+| `IJobStatusBackplane` | Opt-in real-time PUSH fan-out (`PublishAsync` + `Subscribe`). `None` (default) / `InMemory` in core; `Postgres` in the EF package. Selected by `Jobs:Status:Backplane`. |
 | `IJobTrigger` | On-demand trigger with provenance + single-flight. |
 | `JobRun`, `JobRunOutcomes`, `JobTriggerSources`, `JobCadence` | The model + vocabulary. |
 | `AddDloizidesJobs(...)` | The one adoption entrypoint. |
+
+## Real-time status (opt-in)
+
+Status is durable and pollable by default. To PUSH changes live, select a **backplane** and (for the browser
+wire) add [`Dloizides.Jobs.AspNetCore`](https://github.com/openmindednewby/Dloizides.Jobs.AspNetCore):
+
+```csharp
+builder.AddDloizidesJobs(jobs =>
+{
+    jobs.AddJob<IngestJob>();
+    jobs.UseEntityFrameworkStore<AppDbContext>();
+    jobs.UsePostgresStatusBackplane<AppDbContext>();  // or jobs.UseInMemoryStatusBackplane()
+});
+```
+
+```jsonc
+"Jobs": { "Status": { "Backplane": "Postgres", "Wire": "Sse" } }
+```
+
+**Persist first, push second.** The runtime writes to the store exactly as before and publishes a lightweight
+event *after* the write commits (at enqueue / claim / progress / checkpoint / complete), only when the
+compare-and-set actually landed. Push is never load-bearing — a dropped notification heals on the next poll,
+so a push client and a poll client always read the same `JobStatus`. Adding a new transport is a
+`AddStatusBackplane(key, factory)` call plus one config value; the core resolver never changes.
 
 ## Guarantees
 
