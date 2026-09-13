@@ -13,6 +13,16 @@ namespace Dloizides.Jobs.Abstractions;
 /// the row first (a concurrent reclaim or completion) and is a BENIGN no-op: the caller drops the row
 /// cleanly and carries on. That is the rule that ends the reclaim-vs-complete error loop, and it is why the
 /// mutating methods return <see cref="bool"/> or a nullable row rather than throwing on contention.
+/// <para>
+/// SINGLE-FLIGHT SCOPE IS AN IMPLEMENTATION CONCERN, NOT A GUARANTEE OF THIS CONTRACT.
+/// <see cref="SingleFlightScope.PerArgument"/> is honoured only by <c>EfJobStore</c> configured with
+/// <c>perArgumentSingleFlight: true</c> (and its migration). Any other store — including <c>EfJobStore</c> on
+/// the default mapping and custom stores that ignore the key — runs every job GLOBAL, one slot per job name.
+/// <c>EfJobStore</c>'s misconfiguration guard keys on a non-empty argument, not on the job's scope, so a
+/// PerArgument job enqueued with a null argument on the default mapping is NOT flagged and silently runs
+/// global. Under the per-argument mapping a null argument shares the one <c>""</c> slot with every other
+/// null/empty-argument run of that job.
+/// </para>
 /// </remarks>
 public interface IJobStore
 {

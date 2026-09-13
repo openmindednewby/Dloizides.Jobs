@@ -16,5 +16,10 @@ public enum SingleFlightScope
     /// string), so a missing argument can never bypass the lock. Requires the per-argument mapping
     /// (<c>ApplyJobRunConfiguration(isNpgsql, perArgumentSingleFlight: true)</c>) and its migration.
     /// </summary>
+    /// <remarks>
+    /// Honoured ONLY by <c>EfJobStore</c> with <c>perArgumentSingleFlight: true</c>. Every other store runs the
+    /// job global (one slot per job name), and a null argument on the default mapping is not flagged as a
+    /// misconfiguration — see the remarks on <see cref="Abstractions.IJobStore"/>.
+    /// </remarks>
     PerArgument = 1,
 }
