@@ -12,7 +12,8 @@ public interface IJobTrigger
     /// <summary>
     /// Try to queue a run of <paramref name="jobName"/>. Returns an explicit result — accepted, unknown job,
     /// or already-running (with the occupying run) — never a silent no-op. <paramref name="argument"/> is
-    /// the run's opaque input and is NOT part of the single-flight key.
+    /// the run's opaque input; it joins the single-flight key only for a job whose
+    /// <see cref="ICheckpointableJob.SingleFlightScope"/> is <see cref="SingleFlightScope.PerArgument"/>.
     /// </summary>
     Task<JobTriggerResult> TriggerAsync(
         string jobName,

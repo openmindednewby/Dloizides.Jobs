@@ -22,6 +22,11 @@ public interface ICheckpointableJob
     /// <see cref="JobCadence.None"/> for a purely on-demand job.</summary>
     JobCadence Cadence { get; }
 
+    /// <summary>What this job's single-flight slot is keyed on. Defaults to <see cref="SingleFlightScope.Global"/>
+    /// (one run per job name); override with <see cref="SingleFlightScope.PerArgument"/> to allow one run per
+    /// distinct argument. Opt-in: an existing job that does not override this is unchanged.</summary>
+    SingleFlightScope SingleFlightScope => SingleFlightScope.Global;
+
     /// <summary>
     /// The long-running body. Call <see cref="IJobContext.SaveCheckpointAsync"/> at intervals so a reclaim
     /// loses at most one interval of work, and <see cref="IJobContext.ReportProgressAsync"/> so the UI and

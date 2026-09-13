@@ -43,7 +43,8 @@ public sealed class JobTriggerService : IJobTrigger
         string? argument,
         CancellationToken cancellationToken)
     {
-        if (!JobResolver.Contains(_provider, jobName))
+        var job = JobResolver.Find(_provider, jobName);
+        if (job is null)
         {
             return JobTriggerResult.UnknownJob();
         }
@@ -56,6 +57,7 @@ public sealed class JobTriggerService : IJobTrigger
             TriggeredAt = _time.GetUtcNow(),
             TenantId = tenantId,
             Argument = argument,
+            SingleFlightKey = SingleFlightKeyFor(job, argument),
             Outcome = JobRunOutcomes.Queued,
         };
 
@@ -80,4 +82,8 @@ public sealed class JobTriggerService : IJobTrigger
 
         return JobTriggerResult.Accepted(result.Run);
     }
+
+    /// <summary>Empty for a global job; the argument (null coalesced to empty) for a per-argument job.</summary>
+    private static string SingleFlightKeyFor(ICheckpointableJob job, string? argument) =>
+        job.SingleFlightScope == SingleFlightScope.PerArgument ? argument ?? string.Empty : string.Empty;
 }

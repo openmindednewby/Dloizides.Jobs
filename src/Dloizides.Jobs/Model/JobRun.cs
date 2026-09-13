@@ -42,8 +42,18 @@ public class JobRun
     public Guid? TenantId { get; set; }
 
     /// <summary>The run's single opaque trigger input (e.g. <c>source=wikidata</c>), or null when it takes
-    /// none. NOT part of the single-flight key — a different argument still contends for the one slot.</summary>
+    /// none. NOT part of the single-flight key for a <see cref="SingleFlightScope.Global"/> job: a different
+    /// argument still contends for the one slot. For a <see cref="SingleFlightScope.PerArgument"/> job it is
+    /// copied into <see cref="SingleFlightKey"/>.</summary>
     public string? Argument { get; set; }
+
+    /// <summary>
+    /// The second half of the single-flight key, stamped by the trigger: the empty string for a
+    /// <see cref="SingleFlightScope.Global"/> job, and <c>Argument ?? ""</c> for a
+    /// <see cref="SingleFlightScope.PerArgument"/> job. Never null, so a null argument cannot slip past a
+    /// unique index that treats NULLs as distinct. Only persisted when the per-argument mapping is enabled.
+    /// </summary>
+    public string SingleFlightKey { get; set; } = string.Empty;
 
     /// <summary>One of <see cref="JobRunOutcomes"/>: <c>queued</c> -&gt; <c>running</c> -&gt;
     /// <c>completed</c>/<c>failed</c>/<c>cancelled</c>. The unfinished values are what the partial unique
