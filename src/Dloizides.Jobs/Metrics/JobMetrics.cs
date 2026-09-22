@@ -21,8 +21,11 @@ namespace Dloizides.Jobs.Metrics;
 /// </remarks>
 public sealed class JobMetrics : IDisposable
 {
-    /// <summary>The meter name an exporter subscribes to.</summary>
-    public const string MeterName = "Dloizides.Jobs";
+    /// <summary>The meter name an exporter subscribes to. It is also the exported series prefix:
+    /// prometheus-net's meter adapter names a series <c>{meter}_{instrument}</c>, so this must stay <c>jobs</c>
+    /// for the scrape to read <c>jobs_*</c> (it read <c>dloizides_jobs_jobs_*</c> while this was
+    /// <c>Dloizides.Jobs</c>). See <see cref="JobMetricNames"/>.</summary>
+    public const string MeterName = "jobs";
 
     private const string UnknownService = "unknown";
     private const string OtelServiceNameVariable = "OTEL_SERVICE_NAME";

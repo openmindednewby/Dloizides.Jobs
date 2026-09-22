@@ -19,7 +19,7 @@
     <Description>Checkpointed, resumable, conflict-safe, watchdog-alarmed, UI-visible background jobs — the storage-agnostic core. Single-flight claim, heartbeated lease, compare-and-set transitions (0-row = benign no-op), resume-from-checkpoint on reclaim. Now with a pluggable real-time status backplane (persist-first-push-second) for opt-in cross-pod PUSH.</Description>
 
     <!-- Versioning -->
-    <Version>1.3.1</Version>
+    <Version>1.3.2</Version>
     <AssemblyVersion>1.3.0.0</AssemblyVersion>
     <FileVersion>1.3.0.0</FileVersion>
 
