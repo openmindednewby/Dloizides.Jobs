@@ -2,6 +2,7 @@ using Dloizides.Jobs.Abstractions;
 using Dloizides.Jobs.Backplane;
 using Dloizides.Jobs.Configuration;
 using Dloizides.Jobs.Hosting;
+using Dloizides.Jobs.Metrics;
 using Dloizides.Jobs.Services;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -54,6 +55,9 @@ public static class ServiceCollectionExtensions
 
         services.TryAddSingleton(TimeProvider.System);
         services.AddSingleton<IOptions<JobsOptions>>(Options.Create(options));
+
+        // The jobs meter (JOBS-VIS-1): one per container, fed by the runner, the job context and the watchdog.
+        services.TryAddSingleton<JobMetrics>();
 
         // The default alarm; a service can register its own IJobStalenessAlarm to page or post instead.
         services.TryAddSingleton<IJobStalenessAlarm, LoggingJobStalenessAlarm>();

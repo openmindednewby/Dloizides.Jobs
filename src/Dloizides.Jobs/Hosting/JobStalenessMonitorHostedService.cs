@@ -1,5 +1,6 @@
 using Dloizides.Jobs.Abstractions;
 using Dloizides.Jobs.Configuration;
+using Dloizides.Jobs.Metrics;
 using Dloizides.Jobs.Runtime;
 using Dloizides.Jobs.Status;
 using Microsoft.Extensions.DependencyInjection;
@@ -65,18 +66,23 @@ public sealed class JobStalenessMonitorHostedService : BackgroundService, IJobSt
         using var scope = _scopes.CreateScope();
         var store = scope.ServiceProvider.GetRequiredService<IJobStore>();
         var alarm = scope.ServiceProvider.GetRequiredService<IJobStalenessAlarm>();
+        var metrics = scope.ServiceProvider.GetService<JobMetrics>();
         var now = _time.GetUtcNow();
 
         var stale = new List<StaleJob>();
         foreach (var job in JobResolver.All(scope.ServiceProvider))
         {
+            // Seed jobs_last_success_timestamp_seconds for EVERY job, so a restarted pod reports it before its
+            // next run; the stale verdict below stays limited to watched jobs.
+            var lastSuccess = await store.GetLastSuccessAtAsync(job.Name, cancellationToken).ConfigureAwait(false);
+            metrics?.RecordLastSuccess(job.Name, lastSuccess);
+
             var cadence = job.Cadence;
             if (!cadence.IsWatched)
             {
                 continue;
             }
 
-            var lastSuccess = await store.GetLastSuccessAtAsync(job.Name, cancellationToken).ConfigureAwait(false);
             var reference = lastSuccess;
             if (reference is null)
             {
@@ -90,14 +96,19 @@ public sealed class JobStalenessMonitorHostedService : BackgroundService, IJobSt
 
             if (reference is null)
             {
+                metrics?.RecordStale(job.Name, stale: false);
                 continue;
             }
 
             var age = now - reference.Value;
             if (age <= cadence.StalenessThreshold)
             {
+                // Within threshold — including a job that just RECOVERED: this is what sets jobs_stale back to 0.
+                metrics?.RecordStale(job.Name, stale: false);
                 continue;
             }
+
+            metrics?.RecordStale(job.Name, stale: true);
 
             var staleJob = new StaleJob(job.Name, lastSuccess, age - cadence.StalenessThreshold, cadence.StalenessThreshold);
             stale.Add(staleJob);

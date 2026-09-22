@@ -14,6 +14,8 @@ public sealed class DefaultJobStatusQuery : IJobStatusQuery
 {
     private const string StartPhase = "start";
     private const string IdleState = "idle";
+    private const string PhaseStartedEvent = "phase-started";
+    private const string PhaseEndedEvent = "phase-ended";
 
     private readonly IServiceProvider _provider;
     private readonly IJobStore _store;
@@ -54,20 +56,47 @@ public sealed class DefaultJobStatusQuery : IJobStatusQuery
         var lastSuccessAt = await _store.GetLastSuccessAtAsync(name, cancellationToken).ConfigureAwait(false);
 
         var current = occupying ?? lastFinished;
-        var progress = BuildProgress(current?.Progress);
+        var now = _time.GetUtcNow();
+        var snapshot = JobJson.Deserialize<ProgressSnapshot>(current?.Progress);
+        var progress = BuildProgress(snapshot);
         var checkpoint = BuildCheckpoint(current?.Checkpoint, progress?.Phase);
         var state = occupying?.Outcome ?? lastFinished?.Outcome ?? IdleState;
         var stale = IsStale(job.Cadence, lastSuccessAt, lastFinished?.CompletedAt);
         var lease = BuildLease(occupying);
         var recentError = lastFinished?.Outcome == JobRunOutcomes.Failed ? lastFinished.Error : current?.Error;
-        var timeline = BuildTimeline(current, checkpoint, progress?.Phase);
+        var phases = BuildPhases(snapshot?.Phases, current?.CompletedAt, now);
+        var timeline = BuildTimeline(current, checkpoint, progress?.Phase, phases);
+        var eta = state == JobRunOutcomes.Running && progress is not null
+            ? JobEta.Estimate(progress.Done, progress.Total, current?.StartedAt, now)
+            : null;
 
-        return new JobStatus(name, state, progress, checkpoint, lastSuccessAt, stale, lease, recentError, timeline);
+        return new JobStatus(name, state, progress, checkpoint, lastSuccessAt, stale, lease, recentError, timeline)
+        {
+            Phases = phases,
+            EstimatedCompletion = eta,
+        };
     }
 
-    private static JobProgressView? BuildProgress(string? json)
+    private static IReadOnlyList<JobPhaseTiming> BuildPhases(
+        IReadOnlyList<JobPhaseSpan>? spans, DateTimeOffset? runCompletedAt, DateTimeOffset now)
     {
-        var snapshot = JobJson.Deserialize<ProgressSnapshot>(json);
+        if (spans is null || spans.Count == 0)
+        {
+            return Array.Empty<JobPhaseTiming>();
+        }
+
+        // The last phase is still open in storage; a FINISHED run closes it at its completion instant.
+        return spans
+            .Select(s =>
+            {
+                var endedAt = s.EndedAt ?? runCompletedAt;
+                return new JobPhaseTiming(s.Phase, s.StartedAt, endedAt, (endedAt ?? now) - s.StartedAt);
+            })
+            .ToList();
+    }
+
+    private static JobProgressView? BuildProgress(ProgressSnapshot? snapshot)
+    {
         if (snapshot is null)
         {
             return null;
@@ -112,7 +141,7 @@ public sealed class DefaultJobStatusQuery : IJobStatusQuery
     }
 
     private static IReadOnlyList<JobTimelineEntry> BuildTimeline(
-        JobRun? run, JobCheckpointView? checkpoint, string? phase)
+        JobRun? run, JobCheckpointView? checkpoint, string? phase, IReadOnlyList<JobPhaseTiming> phases)
     {
         if (run is null)
         {
@@ -128,6 +157,15 @@ public sealed class DefaultJobStatusQuery : IJobStatusQuery
         if (checkpoint is not null)
         {
             entries.Add(new JobTimelineEntry(checkpoint.At, "checkpoint", phase));
+        }
+
+        foreach (var span in phases)
+        {
+            entries.Add(new JobTimelineEntry(span.StartedAt, PhaseStartedEvent, span.Phase));
+            if (span.EndedAt is { } endedAt)
+            {
+                entries.Add(new JobTimelineEntry(endedAt, PhaseEndedEvent, span.Phase));
+            }
         }
 
         if (run.CompletedAt is { } completedAt)

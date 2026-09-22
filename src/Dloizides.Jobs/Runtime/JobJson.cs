@@ -53,4 +53,15 @@ public sealed record CheckpointEnvelope(DateTimeOffset At, JsonElement State);
 /// <param name="Done">Items processed so far.</param>
 /// <param name="Total">Total items in this phase, or 0 when unknown.</param>
 /// <param name="UpdatedAt">When this snapshot was reported.</param>
-public sealed record ProgressSnapshot(string Phase, long Done, long Total, DateTimeOffset UpdatedAt);
+public sealed record ProgressSnapshot(string Phase, long Done, long Total, DateTimeOffset UpdatedAt)
+{
+    /// <summary>Every phase this run has entered, oldest first, with its start and (once left) end — the
+    /// per-phase timing. Null on snapshots written before 1.3.0.</summary>
+    public IReadOnlyList<JobPhaseSpan>? Phases { get; init; }
+}
+
+/// <summary>One phase of a run as persisted in the progress snapshot.</summary>
+/// <param name="Phase">The phase label as reported.</param>
+/// <param name="StartedAt">When the run first reported this phase.</param>
+/// <param name="EndedAt">When the run moved to the next phase, or null while it is the current one.</param>
+public sealed record JobPhaseSpan(string Phase, DateTimeOffset StartedAt, DateTimeOffset? EndedAt = null);

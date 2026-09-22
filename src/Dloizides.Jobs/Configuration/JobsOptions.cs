@@ -31,6 +31,10 @@ public sealed class JobsOptions
     /// <summary>How many recent runs the status query includes in a job's timeline history. Default 20.</summary>
     public int HistoryLimit { get; set; } = 20;
 
+    /// <summary>The <c>service</c> tag on the jobs metrics. Null = <c>OTEL_SERVICE_NAME</c>, then the entry
+    /// assembly name.</summary>
+    public string? ServiceName { get; set; }
+
     /// <summary>Real-time status PUSH tunables — the <c>Jobs:Status</c> sub-section (backplane + wire
     /// selection). Opt-in: defaults to poll-only, so leaving it unset changes nothing.</summary>
     public JobStatusOptions Status { get; set; } = new();

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Dloizides.Jobs.Abstractions;
+using Dloizides.Jobs.Metrics;
 using Dloizides.Jobs.Status;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -27,7 +28,10 @@ public sealed class JobContext : IJobContext
     private readonly TimeProvider _time;
     private readonly IJobStatusBackplane _backplane;
     private readonly ILogger? _logger;
+    private const int MaxPhaseSpans = 256;
+
     private string? _checkpoint;
+    private IReadOnlyList<JobPhaseSpan> _phases;
 
     /// <summary>
     /// Construct the context for one run.
@@ -51,6 +55,35 @@ public sealed class JobContext : IJobContext
         TimeProvider time,
         IJobStatusBackplane backplane,
         ILogger? logger)
+        : this(scopes, jobName, runId, owner, argument, initialCheckpoint, time, backplane, logger, null)
+    {
+    }
+
+    /// <summary>
+    /// Construct the context for one run, rehydrating the per-phase timing from the progress the run carried
+    /// at claim time (non-null on a resume), so a reclaimed run keeps its earlier phases.
+    /// </summary>
+    /// <param name="scopes">Scope factory for the fresh-scope checkpoint/progress writes.</param>
+    /// <param name="jobName">The job's name — the key carried on published status events.</param>
+    /// <param name="runId">The run being executed.</param>
+    /// <param name="owner">This runner's lease owner id — the compare-and-set key.</param>
+    /// <param name="argument">The run's opaque trigger input.</param>
+    /// <param name="initialCheckpoint">The checkpoint the run carried at claim time (non-null on a resume).</param>
+    /// <param name="time">The clock used to stamp checkpoints.</param>
+    /// <param name="backplane">The status backplane notified AFTER each persisted change (fail-soft).</param>
+    /// <param name="logger">Optional logger for a swallowed publish fault.</param>
+    /// <param name="initialProgress">The progress snapshot the run carried at claim time, or null.</param>
+    public JobContext(
+        IServiceScopeFactory scopes,
+        string jobName,
+        Guid runId,
+        string owner,
+        string? argument,
+        string? initialCheckpoint,
+        TimeProvider time,
+        IJobStatusBackplane backplane,
+        ILogger? logger,
+        string? initialProgress)
     {
         _scopes = scopes;
         _jobName = jobName;
@@ -61,6 +94,7 @@ public sealed class JobContext : IJobContext
         _time = time;
         _backplane = backplane;
         _logger = logger;
+        _phases = JobJson.Deserialize<ProgressSnapshot>(initialProgress)?.Phases ?? Array.Empty<JobPhaseSpan>();
     }
 
     /// <inheritdoc />
@@ -108,7 +142,9 @@ public sealed class JobContext : IJobContext
     /// <inheritdoc />
     public async Task ReportProgressAsync(string phase, long done, long total, CancellationToken cancellationToken)
     {
-        var snapshot = new ProgressSnapshot(phase, done, total, _time.GetUtcNow());
+        var now = _time.GetUtcNow();
+        var phases = AdvancePhases(_phases, phase, now);
+        var snapshot = new ProgressSnapshot(phase, done, total, now) { Phases = phases };
         var json = JobJson.Serialize(snapshot);
 
         using var scope = _scopes.CreateScope();
@@ -118,8 +154,37 @@ public sealed class JobContext : IJobContext
         // Persist-first-push-second: notify only after the progress row committed, and only while still owned.
         if (owned)
         {
+            _phases = phases;
+            scope.ServiceProvider.GetService<JobMetrics>()?.RecordProgress(_jobName, done, total);
             await PublishAsync(JobStatusEventKinds.Progress, cancellationToken).ConfigureAwait(false);
         }
+    }
+
+    /// <summary>Close the current phase and open <paramref name="phase"/> when the label changes; a repeat
+    /// report of the same phase leaves the list as is. Capped at <see cref="MaxPhaseSpans"/> (oldest dropped)
+    /// so a job that labels phases per item cannot grow its progress row without bound.</summary>
+    private static IReadOnlyList<JobPhaseSpan> AdvancePhases(
+        IReadOnlyList<JobPhaseSpan> phases, string phase, DateTimeOffset now)
+    {
+        if (phases.Count > 0 && string.Equals(phases[^1].Phase, phase, StringComparison.Ordinal))
+        {
+            return phases;
+        }
+
+        var next = new List<JobPhaseSpan>(phases.Count + 1);
+        next.AddRange(phases);
+        if (next.Count > 0)
+        {
+            next[^1] = next[^1] with { EndedAt = now };
+        }
+
+        next.Add(new JobPhaseSpan(phase, now));
+        if (next.Count > MaxPhaseSpans)
+        {
+            next.RemoveRange(0, next.Count - MaxPhaseSpans);
+        }
+
+        return next;
     }
 
     private Task PublishAsync(string kind, CancellationToken cancellationToken)

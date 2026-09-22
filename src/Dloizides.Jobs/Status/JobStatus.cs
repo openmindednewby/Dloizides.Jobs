@@ -24,7 +24,23 @@ public sealed record JobStatus(
     bool Stale,
     JobLeaseView? Lease,
     string? RecentError,
-    IReadOnlyList<JobTimelineEntry> Timeline);
+    IReadOnlyList<JobTimelineEntry> Timeline)
+{
+    /// <summary>Per-phase timing of the current (or last) run, oldest first; empty when no phase was reported.</summary>
+    public IReadOnlyList<JobPhaseTiming> Phases { get; init; } = Array.Empty<JobPhaseTiming>();
+
+    /// <summary>Server-side ETA of a RUNNING run from its own rate (done/total over elapsed); null when there
+    /// is no total, too little observed, or the run is not running. See <c>JobEta</c>.</summary>
+    public DateTimeOffset? EstimatedCompletion { get; init; }
+}
+
+/// <summary>One phase of a run with its measured duration.</summary>
+/// <param name="Phase">The phase label.</param>
+/// <param name="StartedAt">When the run entered the phase.</param>
+/// <param name="EndedAt">When it left the phase (or the run finished); null while the phase is current.</param>
+/// <param name="Duration">EndedAt - StartedAt, or the time spent so far for the current phase.</param>
+public sealed record JobPhaseTiming(
+    string Phase, DateTimeOffset StartedAt, DateTimeOffset? EndedAt, TimeSpan Duration);
 
 /// <summary>Structured progress: a phase label and a done/total pair, with the derived percentage.</summary>
 /// <param name="Phase">Free-form phase label (e.g. <c>leaders/FR</c>).</param>

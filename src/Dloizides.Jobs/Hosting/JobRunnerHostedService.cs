@@ -1,5 +1,6 @@
 using Dloizides.Jobs.Abstractions;
 using Dloizides.Jobs.Configuration;
+using Dloizides.Jobs.Metrics;
 using Dloizides.Jobs.Model;
 using Dloizides.Jobs.Runtime;
 using Dloizides.Jobs.Status;
@@ -87,24 +88,32 @@ public sealed class JobRunnerHostedService : BackgroundService, IJobRunner
             return false;
         }
 
+        var metrics = scope.ServiceProvider.GetService<JobMetrics>();
         var job = JobResolver.Find(scope.ServiceProvider, run.JobName);
         if (job is null)
         {
             // The run names a job this build no longer registers (a rollback, say). Fail it rather than
             // leave it holding the single-flight slot forever.
-            await store.CompleteAsync(
+            var failedAt = _time.GetUtcNow();
+            var failed = await store.CompleteAsync(
                 run.Id, _owner, JobRunOutcomes.Failed,
-                $"No job is registered under the name '{run.JobName}'.", _time.GetUtcNow(), cancellationToken)
+                $"No job is registered under the name '{run.JobName}'.", failedAt, cancellationToken)
                 .ConfigureAwait(false);
+            if (failed)
+            {
+                metrics?.RecordRunFinished(run.JobName, JobRunOutcomes.Failed, startedAt: null, failedAt);
+            }
+
             return true;
         }
 
-        await ExecuteClaimedAsync(store, job, run, cancellationToken).ConfigureAwait(false);
+        await ExecuteClaimedAsync(store, job, run, metrics, cancellationToken).ConfigureAwait(false);
         return true;
     }
 
     private async Task ExecuteClaimedAsync(
-        IJobStore store, ICheckpointableJob job, JobRun run, CancellationToken cancellationToken)
+        IJobStore store, ICheckpointableJob job, JobRun run, JobMetrics? metrics,
+        CancellationToken cancellationToken)
     {
         if (run.ClaimedBy is not null && !string.Equals(run.ClaimedBy, _owner, StringComparison.Ordinal))
         {
@@ -113,7 +122,8 @@ public sealed class JobRunnerHostedService : BackgroundService, IJobRunner
         }
 
         var context = new JobContext(
-            _scopes, run.JobName, run.Id, _owner, run.Argument, run.Checkpoint, _time, _backplane, _logger);
+            _scopes, run.JobName, run.Id, _owner, run.Argument, run.Checkpoint, _time, _backplane, _logger,
+            run.Progress);
         var resumed = run.Checkpoint is not null;
         if (resumed)
         {
@@ -126,6 +136,8 @@ public sealed class JobRunnerHostedService : BackgroundService, IJobRunner
         await PublishAsync(
             run, resumed ? JobStatusEventKinds.Reclaimed : JobStatusEventKinds.Claimed, cancellationToken)
             .ConfigureAwait(false);
+
+        metrics?.RecordRunStarted(run.JobName);
 
         string outcome;
         string? error;
@@ -146,6 +158,7 @@ public sealed class JobRunnerHostedService : BackgroundService, IJobRunner
             // its lease lapses and another poll RECLAIMS and RESUMES it from the last checkpoint. Marking it
             // failed here would discard recoverable progress — exactly the "restart from scratch" regression.
             await heartbeat.DisposeAsync().ConfigureAwait(false);
+            metrics?.RecordRunInterrupted(run.JobName);
             _logger.LogInformation(
                 "Job {JobName} run {RunId} interrupted by shutdown; leaving it for reclaim-and-resume.",
                 run.JobName, run.Id);
@@ -162,11 +175,13 @@ public sealed class JobRunnerHostedService : BackgroundService, IJobRunner
             await heartbeat.DisposeAsync().ConfigureAwait(false);
         }
 
+        var completedAt = _time.GetUtcNow();
         var recorded = await store
-            .CompleteAsync(run.Id, _owner, outcome, error, _time.GetUtcNow(), cancellationToken)
+            .CompleteAsync(run.Id, _owner, outcome, error, completedAt, cancellationToken)
             .ConfigureAwait(false);
         if (!recorded)
         {
+            metrics?.RecordRunInterrupted(run.JobName);
             // Reclaimed out from under us before we could record the outcome. The reclaimer's state stands;
             // drop this run cleanly and let the poll continue. Never a throw, never a retry loop.
             _logger.LogInformation(
@@ -174,6 +189,8 @@ public sealed class JobRunnerHostedService : BackgroundService, IJobRunner
                 + "dropping it cleanly.", run.JobName, run.Id, outcome);
             return;
         }
+
+        metrics?.RecordRunFinished(run.JobName, outcome, run.StartedAt, completedAt);
 
         // Persist-first-push-second: the terminal outcome committed; notify with the outcome as the kind.
         await PublishAsync(run, outcome, cancellationToken).ConfigureAwait(false);
