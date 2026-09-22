@@ -22,13 +22,15 @@ namespace Dloizides.Jobs.Runtime;
 /// </remarks>
 public sealed class JobContext : IJobContext
 {
+    private const int MaxPhaseSpans = 256;
+
     private readonly IServiceScopeFactory _scopes;
     private readonly string _jobName;
     private readonly string _owner;
     private readonly TimeProvider _time;
     private readonly IJobStatusBackplane _backplane;
     private readonly ILogger? _logger;
-    private const int MaxPhaseSpans = 256;
+    private readonly object _phaseLock = new();
 
     private string? _checkpoint;
     private IReadOnlyList<JobPhaseSpan> _phases;
@@ -94,6 +96,10 @@ public sealed class JobContext : IJobContext
         _time = time;
         _backplane = backplane;
         _logger = logger;
+
+        // A resumed run reloads its earlier phases from the progress it carried at claim time. The phase that
+        // was open when the previous owner died stays open (EndedAt null) and keeps its original StartedAt, so
+        // the downtime between the lost owner and this reclaim counts INSIDE that phase's duration.
         _phases = JobJson.Deserialize<ProgressSnapshot>(initialProgress)?.Phases ?? Array.Empty<JobPhaseSpan>();
     }
 
@@ -143,7 +149,12 @@ public sealed class JobContext : IJobContext
     public async Task ReportProgressAsync(string phase, long done, long total, CancellationToken cancellationToken)
     {
         var now = _time.GetUtcNow();
-        var phases = AdvancePhases(_phases, phase, now);
+        IReadOnlyList<JobPhaseSpan> phases;
+        lock (_phaseLock)
+        {
+            phases = AdvancePhases(_phases, phase, now);
+        }
+
         var snapshot = new ProgressSnapshot(phase, done, total, now) { Phases = phases };
         var json = JobJson.Serialize(snapshot);
 
@@ -154,7 +165,14 @@ public sealed class JobContext : IJobContext
         // Persist-first-push-second: notify only after the progress row committed, and only while still owned.
         if (owned)
         {
-            _phases = phases;
+            // Re-advance from the CURRENT list under the lock rather than assigning the snapshot computed
+            // above: a concurrent report may have moved _phases on meanwhile, and a plain assignment would
+            // roll its phase back.
+            lock (_phaseLock)
+            {
+                _phases = AdvancePhases(_phases, phase, now);
+            }
+
             scope.ServiceProvider.GetService<JobMetrics>()?.RecordProgress(_jobName, done, total);
             await PublishAsync(JobStatusEventKinds.Progress, cancellationToken).ConfigureAwait(false);
         }

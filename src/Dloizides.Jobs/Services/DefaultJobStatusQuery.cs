@@ -67,7 +67,7 @@ public sealed class DefaultJobStatusQuery : IJobStatusQuery
         var phases = BuildPhases(snapshot?.Phases, current?.CompletedAt, now);
         var timeline = BuildTimeline(current, checkpoint, progress?.Phase, phases);
         var eta = state == JobRunOutcomes.Running && progress is not null
-            ? JobEta.Estimate(progress.Done, progress.Total, current?.StartedAt, now)
+            ? JobEta.Estimate(progress.Done, progress.Total, EtaBaseline(snapshot, current?.StartedAt), now)
             : null;
 
         return new JobStatus(name, state, progress, checkpoint, lastSuccessAt, stale, lease, recentError, timeline)
@@ -75,6 +75,14 @@ public sealed class DefaultJobStatusQuery : IJobStatusQuery
             Phases = phases,
             EstimatedCompletion = eta,
         };
+    }
+
+    /// <summary>The instant the reported done/total is measured from: the current phase's start when the run
+    /// reports phases (done/total describe that phase), else the run's start.</summary>
+    private static DateTimeOffset? EtaBaseline(ProgressSnapshot? snapshot, DateTimeOffset? runStartedAt)
+    {
+        var spans = snapshot?.Phases;
+        return spans is { Count: > 0 } ? spans[^1].StartedAt : runStartedAt;
     }
 
     private static IReadOnlyList<JobPhaseTiming> BuildPhases(

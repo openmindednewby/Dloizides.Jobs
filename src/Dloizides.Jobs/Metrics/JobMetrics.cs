@@ -61,8 +61,14 @@ public sealed class JobMetrics : IDisposable
     /// <summary>The value of the <c>service</c> tag on every measurement.</summary>
     public string ServiceName { get; }
 
-    /// <summary>A run of <paramref name="job"/> was claimed by this process.</summary>
-    public void RecordRunStarted(string job) => State(job).Running = 1;
+    /// <summary>A run of <paramref name="job"/> was claimed by this process. Resets the progress gauge to 0,
+    /// so a new run does not keep showing the previous run's final ratio until its first progress report.</summary>
+    public void RecordRunStarted(string job)
+    {
+        var state = State(job);
+        state.Progress = 0d;
+        state.Running = 1;
+    }
 
     /// <summary>The job reported <paramref name="done"/> of <paramref name="total"/>; ignored without a total.</summary>
     public void RecordProgress(string job, long done, long total)
@@ -88,7 +94,7 @@ public sealed class JobMetrics : IDisposable
 
         if (outcome == JobRunOutcomes.Completed)
         {
-            state.LastSuccessUnixSeconds = completedAt.ToUnixTimeSeconds();
+            state.RaiseLastSuccess(completedAt.ToUnixTimeSeconds());
             state.Progress = 1d;
         }
         else if (outcome == JobRunOutcomes.Failed)
@@ -109,12 +115,7 @@ public sealed class JobMetrics : IDisposable
             return;
         }
 
-        var state = State(job);
-        var seconds = (double)lastSuccessAt.Value.ToUnixTimeSeconds();
-        if (double.IsNaN(state.LastSuccessUnixSeconds) || seconds > state.LastSuccessUnixSeconds)
-        {
-            state.LastSuccessUnixSeconds = seconds;
-        }
+        State(job).RaiseLastSuccess(lastSuccessAt.Value.ToUnixTimeSeconds());
     }
 
     /// <summary>Set <c>jobs_stale</c> for a watched job: 1 when overdue, 0 once it recovers.</summary>
@@ -164,11 +165,7 @@ public sealed class JobMetrics : IDisposable
         private double _stale = double.NaN;
         private double _progress = double.NaN;
 
-        public double LastSuccessUnixSeconds
-        {
-            get => Volatile.Read(ref _lastSuccess);
-            set => Volatile.Write(ref _lastSuccess, value);
-        }
+        public double LastSuccessUnixSeconds => Volatile.Read(ref _lastSuccess);
 
         public double Running
         {
@@ -186,6 +183,24 @@ public sealed class JobMetrics : IDisposable
         {
             get => Volatile.Read(ref _progress);
             set => Volatile.Write(ref _progress, value);
+        }
+
+        /// <summary>Move the last success forward to <paramref name="seconds"/>, never backwards. A
+        /// compare-exchange loop, so the watchdog's seed and a run's completion racing each other cannot
+        /// overwrite a newer value with an older one.</summary>
+        public void RaiseLastSuccess(double seconds)
+        {
+            var current = Volatile.Read(ref _lastSuccess);
+            while (double.IsNaN(current) || seconds > current)
+            {
+                var observed = Interlocked.CompareExchange(ref _lastSuccess, seconds, current);
+                if (observed.Equals(current))
+                {
+                    return;
+                }
+
+                current = observed;
+            }
         }
     }
 }
