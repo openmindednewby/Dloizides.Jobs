@@ -248,6 +248,39 @@ public sealed class JobPauseSwitchAcceptanceTests
     }
 
     [Fact]
+    public async Task AC_3_PausedWatchedJob_IsNeverStaleAndItsClockRestartsOnResume()
+    {
+        var config = PauseHarness.MemoryConfig();
+        using var harness = PauseHarness.Create(config);
+        using var capture = new PauseMeterCapture(harness.Service);
+        var monitor = harness.Provider.GetRequiredService<IJobStalenessMonitor>();
+        var longAgo = DateTimeOffset.UtcNow.AddDays(-3);
+        harness.Store.Seed(new JobRun
+        {
+            JobName = WatchedNightlyJob.JobName,
+            TriggerSource = JobTriggerSources.Scheduled,
+            TriggeredAt = longAgo,
+            StartedAt = longAgo,
+            CompletedAt = longAgo,
+            Outcome = JobRunOutcomes.Completed,
+        });
+
+        // Control: unpaused, 3 days past a 2h threshold -> stale. Proves the probe can see staleness at all.
+        (await monitor.CheckOnceAsync(default)).ShouldHaveSingleItem().Job.ShouldBe(WatchedNightlyJob.JobName);
+        capture.Latest(JobMetricNames.Stale, WatchedNightlyJob.JobName).ShouldBe(1d);
+
+        config["Jobs:Paused:0"] = WatchedNightlyJob.JobName;
+        config.Reload();
+        (await monitor.CheckOnceAsync(default)).ShouldBeEmpty();
+        capture.Latest(JobMetricNames.Stale, WatchedNightlyJob.JobName).ShouldBe(0d);
+
+        config["Jobs:Paused:0"] = null;
+        config.Reload();
+        (await monitor.CheckOnceAsync(default)).ShouldBeEmpty();
+        capture.Latest(JobMetricNames.Stale, WatchedNightlyJob.JobName).ShouldBe(0d);
+    }
+
+    [Fact]
     public void AC_3_PausedGauge_ExportsAsJobsPaused()
     {
         $"{JobMetrics.MeterName}_{JobMetricNames.Paused}".ShouldBe("jobs_paused");

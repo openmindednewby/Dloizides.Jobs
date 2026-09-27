@@ -50,6 +50,18 @@ public sealed class BrokenJob(RunLog log) : ICheckpointableJob
     }
 }
 
+/// <summary>A WATCHED job (stale 2h after its last success) for the watchdog-vs-pause tests.</summary>
+public sealed class WatchedNightlyJob : ICheckpointableJob
+{
+    public const string JobName = "watched-nightly";
+
+    public string Name => JobName;
+
+    public JobCadence Cadence => JobCadence.Every(TimeSpan.FromHours(1), TimeSpan.FromHours(2));
+
+    public Task RunAsync(IJobContext context, CancellationToken cancellationToken) => Task.CompletedTask;
+}
+
 /// <summary>
 /// Core runtime over the in-memory store, with the <c>Jobs</c> section bound from a caller-supplied
 /// configuration root so a test can change <c>Jobs:Paused</c> and reload it the way a ConfigMap update does.
@@ -87,6 +99,7 @@ public sealed class PauseHarness : IDisposable
             {
                 jobs.AddJob<NightlyJob>();
                 jobs.AddJob<BrokenJob>();
+                jobs.AddJob<WatchedNightlyJob>();
                 jobs.Services.AddSingleton<IJobStore>(store);
                 jobs.Configure(o => o.ServiceName = service);
             },

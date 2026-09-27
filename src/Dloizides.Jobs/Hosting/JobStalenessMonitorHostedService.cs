@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Dloizides.Jobs.Abstractions;
 using Dloizides.Jobs.Configuration;
 using Dloizides.Jobs.Metrics;
@@ -21,18 +22,27 @@ public sealed class JobStalenessMonitorHostedService : BackgroundService, IJobSt
     private readonly JobsOptions _options;
     private readonly TimeProvider _time;
     private readonly ILogger<JobStalenessMonitorHostedService> _logger;
+    private readonly IJobPauseSwitch? _pause;
 
-    /// <summary>Construct the watchdog.</summary>
+    // Pause bookkeeping (JOBS-CTL-1d): jobs seen paused, and when each was first seen resumed. In memory on
+    // purpose: after a pod restart the clock falls back to the last success, which can only over-report.
+    private readonly ConcurrentDictionary<string, byte> _seenPaused = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, DateTimeOffset> _resumedAt = new(StringComparer.Ordinal);
+
+    /// <summary>Construct the watchdog. With a <paramref name="pause"/> switch a paused job is never stale,
+    /// and its staleness clock restarts when it is resumed.</summary>
     public JobStalenessMonitorHostedService(
         IServiceScopeFactory scopes,
         IOptions<JobsOptions> options,
         TimeProvider time,
-        ILogger<JobStalenessMonitorHostedService> logger)
+        ILogger<JobStalenessMonitorHostedService> logger,
+        IJobPauseSwitch? pause = null)
     {
         _scopes = scopes;
         _options = options.Value;
         _time = time;
         _logger = logger;
+        _pause = pause;
     }
 
     /// <inheritdoc />
@@ -94,10 +104,17 @@ public sealed class JobStalenessMonitorHostedService : BackgroundService, IJobSt
                 reference = lastFinished?.CompletedAt;
             }
 
-            if (reference is null)
+            if (reference is null || IsPausedNow(job.Name, now))
             {
+                // Never ran, or paused on purpose: a pause is not an outage, so never stale and never an alarm.
                 metrics?.RecordStale(job.Name, stale: false);
                 continue;
+            }
+
+            if (_resumedAt.TryGetValue(job.Name, out var resumedAt) && resumedAt > reference.Value)
+            {
+                // Resumed after a pause: the pause period does not count, the clock restarts at the resume.
+                reference = resumedAt;
             }
 
             var age = now - reference.Value;
@@ -116,5 +133,27 @@ public sealed class JobStalenessMonitorHostedService : BackgroundService, IJobSt
         }
 
         return stale;
+    }
+
+    /// <summary>Whether the job is paused now; records the first sweep that sees it resumed.</summary>
+    private bool IsPausedNow(string job, DateTimeOffset now)
+    {
+        if (_pause is null)
+        {
+            return false;
+        }
+
+        if (_pause.IsPaused(job))
+        {
+            _seenPaused[job] = 0;
+            return true;
+        }
+
+        if (_seenPaused.TryRemove(job, out _))
+        {
+            _resumedAt[job] = now;
+        }
+
+        return false;
     }
 }
