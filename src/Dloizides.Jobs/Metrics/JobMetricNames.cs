@@ -5,7 +5,7 @@ namespace Dloizides.Jobs.Metrics;
 /// exports each as <c>{meter name}_{instrument name}</c> (meter dots become underscores, lower-cased; no unit
 /// suffix, no <c>_total</c> added), so with the meter named <c>jobs</c> the scrape carries exactly
 /// <c>jobs_last_success_timestamp_seconds</c>, <c>jobs_run_duration_seconds</c>, <c>jobs_running</c>,
-/// <c>jobs_stale</c>, <c>jobs_progress_ratio</c> and <c>jobs_failures_total</c> — the names the alert rules,
+/// <c>jobs_stale</c>, <c>jobs_paused</c>, <c>jobs_progress_ratio</c> and <c>jobs_failures_total</c> — the names the alert rules,
 /// dashboards, notification-api's JobHealthCollector and the katastasi feeder query. Do not add a
 /// <c>jobs_</c> prefix here: it would export as <c>jobs_jobs_*</c> (JOBS-VIS-1 "Make job statuses visible").
 /// </summary>
@@ -25,6 +25,9 @@ public static class JobMetricNames
 
     /// <summary>Gauge: progress done/total, 0..1.</summary>
     public const string ProgressRatio = "progress_ratio";
+
+    /// <summary>Gauge: 1 while the job is on the <c>Jobs:Paused</c> list, else 0 (JOBS-CTL-1d).</summary>
+    public const string Paused = "paused";
 
     /// <summary>Counter: failed runs.</summary>
     public const string FailuresTotal = "failures_total";

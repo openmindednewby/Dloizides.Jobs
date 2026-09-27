@@ -56,6 +56,16 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton(TimeProvider.System);
         services.AddSingleton<IOptions<JobsOptions>>(Options.Create(options));
 
+        // The live pause switch (JOBS-CTL-1d): Jobs:Paused through IOptionsMonitor, so a reloaded source
+        // (the mounted jobs-control ConfigMap) applies with no restart.
+        var pauseOptions = services.AddOptions<JobPauseOptions>();
+        if (configurationSection is not null)
+        {
+            pauseOptions.Bind(configurationSection);
+        }
+
+        services.TryAddSingleton<IJobPauseSwitch, OptionsJobPauseSwitch>();
+
         // The jobs meter (JOBS-VIS-1): one per container, fed by the runner, the job context and the watchdog.
         services.TryAddSingleton<JobMetrics>();
 

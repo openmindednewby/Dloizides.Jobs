@@ -35,11 +35,17 @@ public enum JobTriggerStatus
 
     /// <summary>A run of this job already occupies the single-flight slot.</summary>
     AlreadyRunning,
+
+    /// <summary>The job is listed in <c>Jobs:Paused</c> and the trigger was unattended (<c>scheduled</c> /
+    /// <c>system</c>); nothing was queued. A <c>manual</c> or <c>api</c> trigger of a paused job is still
+    /// accepted.</summary>
+    Paused,
 }
 
 /// <summary>The outcome of <see cref="IJobTrigger.TriggerAsync"/>.</summary>
 /// <param name="Status">Accepted / UnknownJob / AlreadyRunning.</param>
-/// <param name="Run">The queued run (Accepted) or the occupying run (AlreadyRunning); null for UnknownJob.</param>
+/// <param name="Run">The queued run (Accepted) or the occupying run (AlreadyRunning); null for UnknownJob and
+/// Paused.</param>
 public readonly record struct JobTriggerResult(JobTriggerStatus Status, JobRun? Run)
 {
     /// <summary>A run was queued.</summary>
@@ -47,6 +53,9 @@ public readonly record struct JobTriggerResult(JobTriggerStatus Status, JobRun? 
 
     /// <summary>No such job.</summary>
     public static JobTriggerResult UnknownJob() => new(JobTriggerStatus.UnknownJob, null);
+
+    /// <summary>The job is paused and the trigger was unattended; nothing was queued.</summary>
+    public static JobTriggerResult Paused() => new(JobTriggerStatus.Paused, null);
 
     /// <summary>The slot was occupied by <paramref name="occupier"/>.</summary>
     public static JobTriggerResult AlreadyRunning(JobRun occupier) =>

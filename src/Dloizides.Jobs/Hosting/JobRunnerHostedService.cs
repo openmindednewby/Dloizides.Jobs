@@ -3,6 +3,7 @@ using Dloizides.Jobs.Configuration;
 using Dloizides.Jobs.Metrics;
 using Dloizides.Jobs.Model;
 using Dloizides.Jobs.Runtime;
+using Dloizides.Jobs.Services;
 using Dloizides.Jobs.Status;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -26,6 +27,7 @@ public sealed class JobRunnerHostedService : BackgroundService, IJobRunner
     private readonly IJobStatusBackplane _backplane;
     private readonly ILogger<JobRunnerHostedService> _logger;
     private readonly string _owner;
+    private readonly IJobPauseSwitch? _pause;
 
     /// <summary>Construct the runner. One lease owner id is minted per instance (see <see cref="JobOwnerId"/>).</summary>
     public JobRunnerHostedService(
@@ -33,7 +35,8 @@ public sealed class JobRunnerHostedService : BackgroundService, IJobRunner
         IOptions<JobsOptions> options,
         TimeProvider time,
         IJobStatusBackplane backplane,
-        ILogger<JobRunnerHostedService> logger)
+        ILogger<JobRunnerHostedService> logger,
+        IJobPauseSwitch? pause = null)
     {
         _scopes = scopes;
         _options = options.Value;
@@ -41,6 +44,7 @@ public sealed class JobRunnerHostedService : BackgroundService, IJobRunner
         _backplane = backplane;
         _logger = logger;
         _owner = JobOwnerId.New();
+        _pause = pause;
     }
 
     /// <summary>This runner's lease owner id — the compare-and-set key on every claim, heartbeat and complete.</summary>
@@ -104,6 +108,12 @@ public sealed class JobRunnerHostedService : BackgroundService, IJobRunner
                 metrics?.RecordRunFinished(run.JobName, JobRunOutcomes.Failed, startedAt: null, failedAt);
             }
 
+            return true;
+        }
+
+        if (_pause is not null && JobPauseRules.Suppresses(_pause, run))
+        {
+            await CancelPausedAsync(store, run, metrics, cancellationToken).ConfigureAwait(false);
             return true;
         }
 
@@ -194,6 +204,30 @@ public sealed class JobRunnerHostedService : BackgroundService, IJobRunner
 
         // Persist-first-push-second: the terminal outcome committed; notify with the outcome as the kind.
         await PublishAsync(run, outcome, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// An unattended run was queued before its job was paused (or resumed after a pod died). Finalise it
+    /// <c>cancelled</c> instead of executing it, so a pause takes effect on the next poll and the run does
+    /// not hold the single-flight slot. A cancelled resume starts fresh when the job is next run.
+    /// </summary>
+    private async Task CancelPausedAsync(
+        IJobStore store, JobRun run, JobMetrics? metrics, CancellationToken cancellationToken)
+    {
+        var cancelledAt = _time.GetUtcNow();
+        var recorded = await store.CompleteAsync(
+            run.Id, _owner, JobRunOutcomes.Cancelled, JobPauseRules.CancelledReason, cancelledAt,
+            cancellationToken).ConfigureAwait(false);
+        if (!recorded)
+        {
+            return;
+        }
+
+        _logger.LogInformation(
+            "Job {JobName} is paused (Jobs:Paused); {TriggerSource} run {RunId} cancelled, not executed.",
+            run.JobName, run.TriggerSource, run.Id);
+        metrics?.RecordRunFinished(run.JobName, JobRunOutcomes.Cancelled, startedAt: null, cancelledAt);
+        await PublishAsync(run, JobRunOutcomes.Cancelled, cancellationToken).ConfigureAwait(false);
     }
 
     private Task PublishAsync(JobRun run, string kind, CancellationToken cancellationToken)

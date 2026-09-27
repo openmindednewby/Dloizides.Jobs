@@ -18,6 +18,7 @@ public sealed class JobTriggerService : IJobTrigger
     private readonly TimeProvider _time;
     private readonly IJobStatusBackplane _backplane;
     private readonly ILogger<JobTriggerService> _logger;
+    private readonly IJobPauseSwitch? _pause;
 
     /// <summary>Construct the trigger service.</summary>
     public JobTriggerService(
@@ -25,13 +26,15 @@ public sealed class JobTriggerService : IJobTrigger
         IJobStore store,
         TimeProvider time,
         IJobStatusBackplane backplane,
-        ILogger<JobTriggerService> logger)
+        ILogger<JobTriggerService> logger,
+        IJobPauseSwitch? pause = null)
     {
         _provider = provider;
         _store = store;
         _time = time;
         _backplane = backplane;
         _logger = logger;
+        _pause = pause;
     }
 
     /// <inheritdoc />
@@ -47,6 +50,14 @@ public sealed class JobTriggerService : IJobTrigger
         if (job is null)
         {
             return JobTriggerResult.UnknownJob();
+        }
+
+        if (_pause is not null && JobPauseRules.IsUnattended(triggerSource) && _pause.IsPaused(jobName))
+        {
+            _logger.LogInformation(
+                "Job {JobName} is paused (Jobs:Paused); {TriggerSource} trigger by {TriggeredBy} not queued.",
+                jobName, triggerSource, triggeredBy);
+            return JobTriggerResult.Paused();
         }
 
         var run = new JobRun

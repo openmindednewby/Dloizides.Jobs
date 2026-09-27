@@ -118,3 +118,31 @@ Standard: `BaseClient/docs/code-standards/background-jobs.md`.
 ## License
 
 MIT
+
+## Pause switch (1.4, JOBS-CTL-1d)
+
+`Jobs:Paused` lists job names that must not run unattended. It is read live through `IOptionsMonitor`,
+so no restart is needed.
+
+- A `scheduled` / `system` trigger of a paused job returns `JobTriggerStatus.Paused` and queues nothing.
+- A `manual` / `api` trigger still runs it once and records `completed` / `failed` as usual.
+- An unattended run queued before the pause landed is finalised `cancelled` by the runner, not executed.
+- The meter exports `jobs_paused{job,service}` (1 paused, 0 not) for every registered job.
+- A service's own timer loop can inject `IJobPauseSwitch` and skip its tick.
+
+Source: the per-cluster `jobs-control` ConfigMap, rendered from `personalServerNotes/jobs/registry.yml`,
+mounted as a volume at `/etc/jobs-control`:
+
+```yaml
+data:
+  jobs-control.json: |
+    { "Jobs": { "Paused": [ "aml-pep-refresh" ] } }
+```
+
+```csharp
+builder.Configuration.AddDloizidesJobsControl();   // before AddDloizidesJobs; polling watcher
+builder.AddDloizidesJobs(jobs => { /* ... */ });
+```
+
+Mount it as a volume, not via `envFrom`: environment variables are fixed at pod start. kubelet refreshes a
+mounted ConfigMap within about a minute; the polling watcher picks the change up within ~4 s after that.

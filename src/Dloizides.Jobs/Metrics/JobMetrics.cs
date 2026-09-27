@@ -2,7 +2,10 @@ using System.Collections.Concurrent;
 using System.Diagnostics.Metrics;
 using System.Reflection;
 using Dloizides.Jobs.Configuration;
+using Dloizides.Jobs.Abstractions;
 using Dloizides.Jobs.Model;
+using Dloizides.Jobs.Runtime;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 
 namespace Dloizides.Jobs.Metrics;
@@ -34,12 +37,20 @@ public sealed class JobMetrics : IDisposable
     private readonly Histogram<double> _duration;
     private readonly Counter<long> _failures;
     private readonly ConcurrentDictionary<string, JobGaugeState> _jobs = new(StringComparer.Ordinal);
+    private readonly IJobPauseSwitch? _pause;
+    private readonly IServiceScopeFactory? _scopes;
+    private IReadOnlyList<string>? _registeredJobs;
 
     /// <summary>Create the meter and its instruments. The <c>service</c> tag comes from
-    /// <see cref="JobsOptions.ServiceName"/>, then <c>OTEL_SERVICE_NAME</c>, then the entry assembly name.</summary>
-    public JobMetrics(IOptions<JobsOptions> options)
+    /// <see cref="JobsOptions.ServiceName"/>, then <c>OTEL_SERVICE_NAME</c>, then the entry assembly name.
+    /// With a <paramref name="pause"/> switch it also exports <c>jobs_paused</c> for every registered job
+    /// (found through <paramref name="scopes"/>) and every name on the pause list.</summary>
+    public JobMetrics(
+        IOptions<JobsOptions> options, IJobPauseSwitch? pause = null, IServiceScopeFactory? scopes = null)
     {
         ArgumentNullException.ThrowIfNull(options);
+        _pause = pause;
+        _scopes = scopes;
         ServiceName = ResolveServiceName(options.Value.ServiceName);
         _meter = new Meter(MeterName, typeof(JobMetrics).Assembly.GetName().Version?.ToString());
 
@@ -55,6 +66,13 @@ public sealed class JobMetrics : IDisposable
         _meter.CreateObservableGauge(
             JobMetricNames.ProgressRatio, () => Observe(s => s.Progress),
             description: "done/total of the current (or last) run, 0..1.");
+        if (_pause is not null)
+        {
+            _meter.CreateObservableGauge(
+                JobMetricNames.Paused, ObservePaused,
+                description: "1 while the job is listed in Jobs:Paused (no scheduled runs), else 0.");
+        }
+
         _duration = _meter.CreateHistogram<double>(
             JobMetricNames.RunDurationSeconds, description: "Wall-clock duration of finished runs, in seconds.");
         _failures = _meter.CreateCounter<long>(
@@ -158,6 +176,30 @@ public sealed class JobMetrics : IDisposable
                 yield return new Measurement<double>(value, Tags(job));
             }
         }
+    }
+
+    private IEnumerable<Measurement<double>> ObservePaused()
+    {
+        var paused = _pause!.PausedJobs;
+        var names = new HashSet<string>(RegisteredJobs(), StringComparer.Ordinal);
+        names.UnionWith(paused);
+        foreach (var job in names)
+        {
+            yield return new Measurement<double>(paused.Contains(job) ? 1d : 0d, Tags(job));
+        }
+    }
+
+    /// <summary>Registered job names, read once from a scope (jobs are scoped registrations).</summary>
+    private IReadOnlyList<string> RegisteredJobs()
+    {
+        if (_registeredJobs is not null || _scopes is null)
+        {
+            return _registeredJobs ?? [];
+        }
+
+        using var scope = _scopes.CreateScope();
+        _registeredJobs = JobResolver.All(scope.ServiceProvider).Select(j => j.Name).ToList();
+        return _registeredJobs;
     }
 
     /// <summary>Latest gauge values for one job; NaN = never observed, so not reported.</summary>
