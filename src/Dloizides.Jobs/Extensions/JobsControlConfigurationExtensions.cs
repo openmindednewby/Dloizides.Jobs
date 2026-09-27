@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.FileProviders;
+using Microsoft.Extensions.Logging;
 
 namespace Dloizides.Jobs.Extensions;
 
@@ -22,8 +23,15 @@ public static class JobsControlConfigurationExtensions
     /// which an inotify watcher does not reliably report. When the directory is absent (local dev, a service
     /// without the mount) nothing is added and nothing is paused.
     /// </summary>
+    /// <remarks>
+    /// FAILS OPEN: an unreadable or invalid file — at boot or on a later reload — is logged as a warning and
+    /// treated as an empty source, so nothing is paused and the host still starts. A bad ConfigMap edit must
+    /// never take a service down; the cost is that a pause does not apply until the file is valid again.
+    /// Configuration is built before DI, so the warning goes to <paramref name="logger"/> when given, else to
+    /// standard error (which the pod log captures).
+    /// </remarks>
     public static IConfigurationBuilder AddDloizidesJobsControl(
-        this IConfigurationBuilder builder, string directory = DefaultDirectory)
+        this IConfigurationBuilder builder, string directory = DefaultDirectory, ILogger? logger = null)
     {
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentException.ThrowIfNullOrWhiteSpace(directory);
@@ -38,6 +46,34 @@ public static class JobsControlConfigurationExtensions
             UsePollingFileWatcher = true,
             UseActivePolling = true,
         };
-        return builder.AddJsonFile(files, FileName, optional: true, reloadOnChange: true);
+        return builder.AddJsonFile(source =>
+        {
+            source.FileProvider = files;
+            source.Path = FileName;
+            source.Optional = true;
+            source.ReloadOnChange = true;
+            source.OnLoadException = context =>
+            {
+                context.Ignore = true;
+                ReportLoadFailure(logger, directory, context.Exception);
+            };
+        });
+    }
+
+    private static void ReportLoadFailure(ILogger? logger, string directory, Exception exception)
+    {
+        const string message =
+            "jobs-control file {File} could not be loaded; treating it as empty, so NO job is paused until it is "
+            + "valid again.";
+        var file = Path.Combine(directory, FileName);
+        if (logger is not null)
+        {
+            logger.LogWarning(exception, message, file);
+            return;
+        }
+
+        Console.Error.WriteLine(
+            $"warn: Dloizides.Jobs: jobs-control file {file} could not be loaded ({exception.Message}); "
+            + "treating it as empty, so NO job is paused until it is valid again.");
     }
 }

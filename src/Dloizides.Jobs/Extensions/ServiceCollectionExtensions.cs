@@ -58,13 +58,7 @@ public static class ServiceCollectionExtensions
 
         // The live pause switch (JOBS-CTL-1d): Jobs:Paused through IOptionsMonitor, so a reloaded source
         // (the mounted jobs-control ConfigMap) applies with no restart.
-        var pauseOptions = services.AddOptions<JobPauseOptions>();
-        if (configurationSection is not null)
-        {
-            pauseOptions.Bind(configurationSection);
-        }
-
-        services.TryAddSingleton<IJobPauseSwitch, OptionsJobPauseSwitch>();
+        AddPauseSwitch(services, configurationSection);
 
         // The jobs meter (JOBS-VIS-1): one per container, fed by the runner, the job context and the watchdog.
         services.TryAddSingleton<JobMetrics>();
@@ -88,6 +82,41 @@ public static class ServiceCollectionExtensions
         services.AddHostedService(sp => sp.GetRequiredService<JobStalenessMonitorHostedService>());
 
         return services;
+    }
+
+    /// <summary>
+    /// Bind <see cref="JobPauseOptions"/> live. With a section, bind that section. Without one (the bare
+    /// overload), bind the <c>Jobs</c> section of the container's <see cref="IConfiguration"/> when the host
+    /// registered one — still reload-aware — and otherwise leave nothing paused rather than fail to resolve.
+    /// </summary>
+    private static void AddPauseSwitch(IServiceCollection services, IConfiguration? configurationSection)
+    {
+        var pauseOptions = services.AddOptions<JobPauseOptions>();
+        if (configurationSection is not null)
+        {
+            pauseOptions.Bind(configurationSection);
+        }
+        else
+        {
+            pauseOptions.Configure<IServiceProvider>((o, sp) =>
+                sp.GetService<IConfiguration>()?.GetSection(JobsOptions.SectionName).Bind(o));
+            services.AddSingleton<IOptionsChangeTokenSource<JobPauseOptions>>(sp =>
+                sp.GetService<IConfiguration>() is { } configuration
+                    ? new ConfigurationChangeTokenSource<JobPauseOptions>(
+                        configuration.GetSection(JobsOptions.SectionName))
+                    : new StaticChangeTokenSource());
+        }
+
+        services.TryAddSingleton<IJobPauseSwitch, OptionsJobPauseSwitch>();
+    }
+
+    /// <summary>A change-token source that never fires — for a container with no <see cref="IConfiguration"/>.</summary>
+    private sealed class StaticChangeTokenSource : IOptionsChangeTokenSource<JobPauseOptions>
+    {
+        public string? Name => Options.DefaultName;
+
+        public Microsoft.Extensions.Primitives.IChangeToken GetChangeToken() =>
+            Microsoft.Extensions.FileProviders.NullChangeToken.Singleton;
     }
 
     /// <summary>

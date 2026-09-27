@@ -146,3 +146,5 @@ builder.AddDloizidesJobs(jobs => { /* ... */ });
 
 Mount it as a volume, not via `envFrom`: environment variables are fixed at pod start. kubelet refreshes a
 mounted ConfigMap within about a minute; the polling watcher picks the change up within ~4 s after that.
+
+The file source fails OPEN: an invalid `jobs-control.json` at boot or on reload is logged as a warning and treated as empty (nothing paused); the host still starts. The bare `services.AddDloizidesJobs(configure)` overload without a section binds `Jobs:Paused` from the container's `IConfiguration` when one is registered.

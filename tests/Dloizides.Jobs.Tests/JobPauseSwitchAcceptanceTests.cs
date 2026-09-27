@@ -79,6 +79,92 @@ public sealed class JobPauseSwitchAcceptanceTests
         harness.Provider.GetRequiredService<IJobPauseSwitch>().IsPaused(NightlyJob.JobName).ShouldBeFalse();
     }
 
+    [Fact]
+    public async Task AC_1_JobsControlFile_WhenInvalidAtBoot_HostStartsWithNothingPausedAndWarns()
+    {
+        var dir = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), $"jobs-control-{Guid.NewGuid():N}"));
+        await File.WriteAllTextAsync(
+            Path.Combine(dir.FullName, JobsControlConfigurationExtensions.FileName), "{ not json");
+        var log = new WarningCapture();
+        try
+        {
+            var config = new ConfigurationBuilder().AddDloizidesJobsControl(dir.FullName, log).Build();
+            using var harness = PauseHarness.Create(config);
+
+            harness.Provider.GetRequiredService<IJobPauseSwitch>().IsPaused(NightlyJob.JobName).ShouldBeFalse();
+            log.Warnings.ShouldHaveSingleItem().ShouldContain(JobsControlConfigurationExtensions.FileName);
+        }
+        finally
+        {
+            dir.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task AC_1_JobsControlFile_WhenRewrittenInvalid_FailsOpenAndWarns()
+    {
+        var dir = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), $"jobs-control-{Guid.NewGuid():N}"));
+        var file = Path.Combine(dir.FullName, JobsControlConfigurationExtensions.FileName);
+        await File.WriteAllTextAsync(file, """{ "Jobs": { "Paused": [ "nightly" ] } }""");
+        var log = new WarningCapture();
+        try
+        {
+            var config = new ConfigurationBuilder().AddDloizidesJobsControl(dir.FullName, log).Build();
+            using var harness = PauseHarness.Create(config);
+            var pause = harness.Provider.GetRequiredService<IJobPauseSwitch>();
+            pause.IsPaused(NightlyJob.JobName).ShouldBeTrue();
+
+            await File.WriteAllTextAsync(file, "{ not json");
+            File.SetLastWriteTimeUtc(file, DateTime.UtcNow.AddMinutes(1));
+
+            var deadline = DateTime.UtcNow + FileReloadDeadline;
+            while ((pause.IsPaused(NightlyJob.JobName) || log.Warnings.Count == 0) && DateTime.UtcNow < deadline)
+            {
+                await Task.Delay(FileReloadPoll);
+            }
+
+            pause.IsPaused(NightlyJob.JobName).ShouldBeFalse();
+            log.Warnings.ShouldNotBeEmpty();
+        }
+        finally
+        {
+            dir.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
+    public void AC_1_BareOverloadWithoutSection_BindsJobsPausedFromHostConfigurationLive()
+    {
+        var config = PauseHarness.MemoryConfig(NightlyJob.JobName);
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton<IConfiguration>(config);
+        services.AddDloizidesJobs(jobs =>
+        {
+            jobs.AddJob<NightlyJob>();
+            jobs.Services.AddSingleton<IJobStore>(new InMemoryJobStore());
+        });
+        using var provider = services.BuildServiceProvider();
+        var pause = provider.GetRequiredService<IJobPauseSwitch>();
+        pause.IsPaused(NightlyJob.JobName).ShouldBeTrue();
+
+        config["Jobs:Paused:0"] = null;
+        config.Reload();
+
+        pause.IsPaused(NightlyJob.JobName).ShouldBeFalse();
+    }
+
+    [Fact]
+    public void AC_1_BareOverloadWithoutAnyConfiguration_PausesNothing()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddDloizidesJobs(jobs => jobs.Services.AddSingleton<IJobStore>(new InMemoryJobStore()));
+        using var provider = services.BuildServiceProvider();
+
+        provider.GetRequiredService<IJobPauseSwitch>().PausedJobs.ShouldBeEmpty();
+    }
+
     [Theory]
     [InlineData(JobTriggerSources.Scheduled)]
     [InlineData(JobTriggerSources.System)]

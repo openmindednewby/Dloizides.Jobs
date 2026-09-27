@@ -110,6 +110,29 @@ public sealed class PauseHarness : IDisposable
     public void Dispose() => Provider.Dispose();
 }
 
+/// <summary>An <see cref="Microsoft.Extensions.Logging.ILogger"/> that keeps warning-or-worse messages.</summary>
+public sealed class WarningCapture : Microsoft.Extensions.Logging.ILogger
+{
+    private readonly ConcurrentQueue<string> _warnings = new();
+
+    public IReadOnlyList<string> Warnings => _warnings.ToList();
+
+    public IDisposable? BeginScope<TState>(TState state)
+        where TState : notnull => null;
+
+    public bool IsEnabled(Microsoft.Extensions.Logging.LogLevel logLevel) => true;
+
+    public void Log<TState>(
+        Microsoft.Extensions.Logging.LogLevel logLevel, Microsoft.Extensions.Logging.EventId eventId, TState state,
+        Exception? exception, Func<TState, Exception?, string> formatter)
+    {
+        if (logLevel >= Microsoft.Extensions.Logging.LogLevel.Warning)
+        {
+            _warnings.Enqueue(formatter(state, exception));
+        }
+    }
+}
+
 /// <summary>Listens to the jobs meter like an exporter, keeping only one service's measurements.</summary>
 public sealed class PauseMeterCapture : IDisposable
 {
